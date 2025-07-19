@@ -1,1133 +1,1209 @@
-import React, { useState, useRef, useCallback, useMemo } from "react";
-
-const ShelfPlanner = () => {
-  const SHELF_WIDTH_IN = 96; // 8 ft * 12 in
-  const SHELF_DEPTH_IN = 48; // 4 ft * 12 in
-  const SCALE = 4; // pixels per inch
-  const TOTAL_SHELF_HEIGHT = 74; // fixed combined shelf height in inches
-
-  const [units, setUnits] = useState([
-    { id: 1, topHeight: 37, bottomHeight: 37 }, // sum 74
-  ]);
-  const [objects, setObjects] = useState([]);
-  const [placedObjects, setPlacedObjects] = useState([]);
-  const [draggedObject, setDraggedObject] = useState(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [sortMode, setSortMode] = useState("catalog"); // 'catalog' or 'height'
-  const fileInputRef = useRef(null);
-
-  const colors = {
-    Loxodonta: {
-      crania: "#87CEEB",
-      mandible: "#4682B4",
-      boxes: "#191970",
-      allskull: "#e0f7ff",
-    },
-    Elephas: {
-      crania: "#90EE90",
-      mandible: "#228B22",
-      boxes: "#006400",
-      allskull: "#e6ffe6",
-    },
-    Other: {
-      crania: "#D3D3D3",
-      mandible: "#808080",
-      boxes: "#404040",
-      allskull: "#f0f0f0",
-    },
-  };
-
-  const addUnit = () => {
-    const newId =
-      units.length > 0 ? Math.max(...units.map((u) => u.id)) + 1 : 1;
-    setUnits([...units, { id: newId, topHeight: 37, bottomHeight: 37 }]);
-  };
-
-  const updateShelfHeight = (unitId, isTop, newHeight) => {
-    const height = Math.max(
-      1,
-      Math.min(TOTAL_SHELF_HEIGHT - 1, parseInt(newHeight) || 1)
-    );
-    setUnits(
-      units.map((unit) =>
-        unit.id === unitId
-          ? isTop
-            ? {
-                ...unit,
-                topHeight: height,
-                bottomHeight: TOTAL_SHELF_HEIGHT - height,
-              }
-            : {
-                ...unit,
-                topHeight: TOTAL_SHELF_HEIGHT - height,
-                bottomHeight: height,
-              }
-          : unit
-      )
-    );
-  };
-
-  const parseCSV = (csvText) => {
-    const lines = csvText.trim().split("\n");
-    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
-
-    const catalogIndex = headers.findIndex((h) => h.includes("catalog"));
-    const heightIndex = headers.findIndex((h) => h.includes("height"));
-    const widthIndex = headers.findIndex((h) => h.includes("width"));
-    const depthIndex = headers.findIndex((h) => h.includes("depth"));
-    const taxaIndex = headers.findIndex(
-      (h) => h.includes("taxa") || h.includes("genus")
-    );
-    const contentsIndex = headers.findIndex(
-      (h) => h.includes("unit contents") || h.includes("contents")
-    );
-
-    return lines.slice(1).map((line, index) => {
-      const values = line.split(",").map((v) => v.trim());
-
-      let taxa = values[taxaIndex] || "Other";
-      if (taxa.toLowerCase().includes("loxodonta")) taxa = "Loxodonta";
-      else if (taxa.toLowerCase().includes("elephas")) taxa = "Elephas";
-      else taxa = "Other";
-
-      let type = values[contentsIndex] || "boxes";
-      type = type.toLowerCase();
-      if (type.includes("all skull")) type = "allskull";
-      else if (
-        type.includes("crania") ||
-        type.includes("cranium") ||
-        type.includes("skull")
-      )
-        type = "crania";
-      else if (type.includes("mandible")) type = "mandible";
-      else type = "boxes";
-
-      return {
-        id: `obj-${index}`,
-        catalog: values[catalogIndex] || `Item ${index + 1}`,
-        height: parseFloat(values[heightIndex]) || 1,
-        width: parseFloat(values[widthIndex]) || 1,
-        depth: parseFloat(values[depthIndex]) || 1,
-        taxa,
-        type,
-        canRotate: !(type === "crania" || type === "allskull"),
-      };
-    });
-  };
-
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const csvData = parseCSV(e.target.result);
-        setObjects(csvData);
-        setPlacedObjects([]);
-      };
-      reader.readAsText(file);
-    }
-  };
-
-  const rotateObject = (objectId) => {
-    // Update objects in library
-    setObjects((prev) =>
-      prev.map((obj) =>
-        obj.id === objectId && obj.canRotate
-          ? { ...obj, width: obj.depth, depth: obj.width }
-          : obj
-      )
-    );
-    
-    // Update placed objects on shelves
-    setPlacedObjects((prev) =>
-      prev.map((obj) =>
-        obj.id === objectId && obj.canRotate
-          ? { ...obj, width: obj.depth, depth: obj.width }
-          : obj
-      )
-    );
-  };
-
-  const handleMouseDown = (e, object, isPlaced = false) => {
-    e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
-    
-    // Store the initial position and mouse offset
-    setDraggedObject({
-      ...object,
-      wasPlaced: isPlaced,
-      originalShelfId: object.shelfId,
-      // Store current screen position
-      x: rect.left,
-      y: rect.top,
-    });
-    
-    // Store where in the object the mouse clicked
-    setDragOffset({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    });
-  };
-
-  const handleMouseMove = useCallback(
-    (e) => {
-      if (!draggedObject) return;
-      // Position the object so it stays under the cursor where it was grabbed
-      const x = e.clientX - dragOffset.x;
-      const y = e.clientY - dragOffset.y;
-      setDraggedObject((prev) => ({ ...prev, x, y }));
-    },
-    [draggedObject, dragOffset]
-  );
-
-  const handleMouseUp = useCallback(() => {
-    if (!draggedObject) return;
-
-    const shelves = document.querySelectorAll(".shelf");
-    let droppedOnShelf = false;
-
-    shelves.forEach((shelf) => {
-      const rect = shelf.getBoundingClientRect();
-      const mouseX = draggedObject.x + dragOffset.x;
-      const mouseY = draggedObject.y + dragOffset.y;
-
-      if (
-        mouseX >= rect.left &&
-        mouseX <= rect.right &&
-        mouseY >= rect.top &&
-        mouseY <= rect.bottom
-      ) {
-        const shelfId = shelf.dataset.shelfId;
-        const [unitId, position] = shelfId.split("-");
-        const unit = units.find((u) => u.id === parseInt(unitId));
-        const shelfHeight =
-          position === "top" ? unit.topHeight : unit.bottomHeight;
-
-        if (draggedObject.height <= shelfHeight) {
-          const objectWidthPx = draggedObject.width * SCALE;
-          const objectDepthPx = draggedObject.depth * SCALE;
-
-          // Calculate position relative to the shelf
-          let objX = mouseX - rect.left - dragOffset.x;
-          let objY = mouseY - rect.top - dragOffset.y;
-
-          objX = Math.max(0, Math.min(objX, rect.width - objectWidthPx));
-          objY = Math.max(0, Math.min(objY, rect.height - objectDepthPx));
-
-          // Remove from original array first:
-          if (draggedObject.wasPlaced) {
-            setPlacedObjects((prev) =>
-              prev.filter((obj) => obj.id !== draggedObject.id)
-            );
-          } else {
-            setObjects((prev) =>
-              prev.filter((obj) => obj.id !== draggedObject.id)
-            );
-          }
-
-          // Add to placedObjects with shelf info and position:
-          setPlacedObjects((prev) => [
-            ...prev,
-            {
-              ...draggedObject,
-              x: objX,
-              y: objY,
-              shelfId,
-            },
-          ]);
-
-          droppedOnShelf = true;
-        }
-      }
-    });
-
-    if (!droppedOnShelf) {
-      // If draggedObject was placed but dropped outside shelf, remove from placed and add back to objects
-      if (draggedObject.wasPlaced) {
-        setPlacedObjects((prev) =>
-          prev.filter((obj) => obj.id !== draggedObject.id)
-        );
-        const { x, y, wasPlaced, originalShelfId, ...cleanObject } = draggedObject;
-        setObjects((prev) => [...prev, cleanObject]);
-      }
-      // If draggedObject was from library and dropped outside, do nothing (stay in library)
-    }
-
-    setDraggedObject(null);
-  }, [draggedObject, units, dragOffset]);
-
-  React.useEffect(() => {
-    if (draggedObject) {
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-      // Helper function to render dragged ghost
-  const renderDraggedGhost = () => {
-    if (!draggedObject) return null;
-    
-    const widthPx = draggedObject.width * SCALE;
-    const depthPx = draggedObject.depth * SCALE;
-    const darkBackground =
-      draggedObject.type === "boxes" &&
-      (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas");
-    const textColor = darkBackground ? "#fff" : "#000";
-    
-    return (
-      <div
-        style={{
-          position: "fixed",
-          pointerEvents: "none",
-          left: draggedObject.x,
-          top: draggedObject.y,
-          zIndex: 1000,
-          width: widthPx,
-          height: depthPx,
-          backgroundColor: colors[draggedObject.taxa]?.[draggedObject.type] || "#ccc",
-          border: "1px solid black",
-          padding: 4,
-          boxSizing: "border-box",
-          fontSize: 10,
-          color: textColor,
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "space-between",
-          borderRadius: 4,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-          opacity: 0.9,
-        }}
-      >
-        <div
-          style={{
-            fontWeight: "bold",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {draggedObject.catalog}
-        </div>
-        <div style={{ fontSize: 9 }}>
-          H: {draggedObject.height.toFixed(1)}
-          <br />
-          W: {draggedObject.width.toFixed(1)}
-          <br />
-          D: {draggedObject.depth.toFixed(1)}
-        </div>
-      </div>
-    );
-  };
-
-  return () => {
-        document.removeEventListener("mousemove", handleMouseMove);
-        document.removeEventListener("mouseup", handleMouseUp);
-      };
-    }
-  }, [draggedObject, handleMouseMove, handleMouseUp]);
-
-  const sortedObjects = useMemo(() => {
-    return [...objects].sort((a, b) => {
-      if (a.taxa !== b.taxa) return a.taxa.localeCompare(b.taxa);
-      if (sortMode === "catalog") return a.catalog.localeCompare(b.catalog);
-      return b.height - a.height;
-    });
-  }, [objects, sortMode]);
-
-  const toggleSortMode = () => {
-    setSortMode((prev) => (prev === "catalog" ? "height" : "catalog"));
-  };
-
-  const [hoveredButton, setHoveredButton] = useState(null);
-
-  const buttonStyle = {
-    padding: "8px 16px",
-    border: "2px solid #8B7355",
-    borderRadius: "6px",
-    background: "linear-gradient(to bottom, #fdfcfb, #f5f3f0)",
-    cursor: "pointer",
-    fontSize: "14px",
-    color: "#5C4A3B",
-    fontWeight: "600",
-    transition: "all 0.2s ease",
-    boxShadow: "0 2px 4px rgba(139, 115, 85, 0.2)",
-  };
-
-  const buttonHoverStyle = {
-    background: "linear-gradient(to bottom, #f5f3f0, #ede9e3)",
-    borderColor: "#6B5A48",
-    boxShadow: "0 3px 6px rgba(139, 115, 85, 0.3)",
-    transform: "translateY(-1px)",
-  };
-
-  const exportReport = () => {
-    // Create HTML content for the new window
-    let htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Shelf Planner Report</title>
-        <style>
-          body {
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elephant Storage Planner</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
             font-family: Arial, sans-serif;
-            padding: 20px;
-            line-height: 1.6;
-          }
-          h1 {
-            color: #333;
-            border-bottom: 2px solid #333;
-            padding-bottom: 10px;
-          }
-          h2 {
-            color: #555;
-            margin-top: 30px;
-          }
-          h3 {
-            color: #666;
-            margin-top: 20px;
-          }
-          table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-top: 10px;
-          }
-          th, td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-          }
-          th {
-            background-color: #f5f5f5;
-            font-weight: bold;
-          }
-          tr:nth-child(even) {
-            background-color: #f9f9f9;
-          }
-          .timestamp {
-            color: #888;
-            font-size: 14px;
-          }
-          @media print {
-            body {
-              padding: 10px;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <h1>Shelf Planner Report</h1>
-        <p class="timestamp">Generated: ${new Date().toLocaleString()}</p>
-    `;
-
-    units.forEach((unit) => {
-      htmlContent += `<h2>Unit ${unit.id}</h2>`;
-      
-      ["top", "bottom"].forEach((position) => {
-        const shelfId = `${unit.id}-${position}`;
-        const shelfHeight = position === "top" ? unit.topHeight : unit.bottomHeight;
-        const contents = placedObjects.filter((obj) => obj.shelfId === shelfId);
-        
-        htmlContent += `
-          <h3>${position.charAt(0).toUpperCase() + position.slice(1)} Shelf (Height: ${shelfHeight} inches)</h3>
-        `;
-        
-        if (contents.length > 0) {
-          htmlContent += `
-            <table>
-              <thead>
-                <tr>
-                  <th>Catalog Number</th>
-                  <th>Taxa</th>
-                  <th>Contents Type</th>
-                  <th>Height (in)</th>
-                  <th>Width (in)</th>
-                  <th>Depth (in)</th>
-                </tr>
-              </thead>
-              <tbody>
-          `;
-          
-          contents.forEach((obj) => {
-            htmlContent += `
-              <tr>
-                <td>${obj.catalog}</td>
-                <td>${obj.taxa}</td>
-                <td>${obj.type.charAt(0).toUpperCase() + obj.type.slice(1)}</td>
-                <td>${obj.height.toFixed(1)}</td>
-                <td>${obj.width.toFixed(1)}</td>
-                <td>${obj.depth.toFixed(1)}</td>
-              </tr>
-            `;
-          });
-          
-          htmlContent += `
-              </tbody>
-            </table>
-          `;
-        } else {
-          htmlContent += `<p>No items placed on this shelf.</p>`;
         }
-      });
-    });
+        #root {
+            width: 100%;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-    htmlContent += `
-      </body>
-      </html>
-    `;
+    <script type="text/babel">
+        const { useState, useRef, useCallback, useMemo, useEffect } = React;
 
-    // Open new window with the content
-    const newWindow = window.open('', 'ShelfPlannerReport', 'width=800,height=600');
-    if (newWindow) {
-      newWindow.document.write(htmlContent);
-      newWindow.document.close();
-    } else {
-      alert('Please allow pop-ups to view the report.');
-    }
-  };
+        const ShelfPlanner = () => {
+          const SHELF_WIDTH_IN = 96; // 8 ft * 12 in
+          const SHELF_DEPTH_IN = 48; // 4 ft * 12 in
+          const SCALE = 4; // pixels per inch
+          const TOTAL_SHELF_HEIGHT = 74; // fixed combined shelf height in inches
 
-  // Helper function to render dragged ghost
-  const renderDraggedGhost = () => {
-    if (!draggedObject) return null;
-    
-    const widthPx = draggedObject.width * SCALE;
-    const depthPx = draggedObject.depth * SCALE;
-    const darkBackground =
-      draggedObject.type === "boxes" &&
-      (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas");
-    const textColor = darkBackground ? "#fff" : "#000";
-    
-    return (
-      <div
-        style={{
-          position: "fixed",
-          pointerEvents: "none",
-          left: draggedObject.x,
-          top: draggedObject.y,
-          zIndex: 1000,
-          width: widthPx,
-          height: depthPx,
-          backgroundColor: colors[draggedObject.taxa]?.[draggedObject.type] || "#ccc",
-          border: "1px solid black",
-          padding: 4,
-          boxSizing: "border-box",
-          fontSize: 10,
-          color: textColor,
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "space-between",
-          borderRadius: 4,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-          opacity: 0.9,
-        }}
-      >
-        <div
-          style={{
-            fontWeight: "bold",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {draggedObject.catalog}
-        </div>
-        <div style={{ fontSize: 9 }}>
-          H: {draggedObject.height.toFixed(1)}
-          <br />
-          W: {draggedObject.width.toFixed(1)}
-          <br />
-          D: {draggedObject.depth.toFixed(1)}
-        </div>
-      </div>
-    );
-  };
+          const [units, setUnits] = useState([
+            { id: 1, topHeight: 37, bottomHeight: 37 }, // sum 74
+          ]);
+          const [objects, setObjects] = useState([]);
+          const [placedObjects, setPlacedObjects] = useState([]);
+          const [draggedObject, setDraggedObject] = useState(null);
+          const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+          const [sortMode, setSortMode] = useState("catalog"); // 'catalog' or 'height'
+          const [editingObject, setEditingObject] = useState(null); // Track which object is being edited
+          const fileInputRef = useRef(null);
 
-  const renderObject = (obj, isPlaced, isLibrary = false) => {
-    const widthPx = obj.width * SCALE;
-    const depthPx = obj.depth * SCALE;
+          const colors = {
+            Loxodonta: {
+              crania: "#87CEEB",
+              mandible: "#4682B4",
+              boxes: "#191970",
+              allskull: "#e0f7ff",
+            },
+            Elephas: {
+              crania: "#90EE90",
+              mandible: "#228B22",
+              boxes: "#006400",
+              allskull: "#e6ffe6",
+            },
+            Other: {
+              crania: "#D3D3D3",
+              mandible: "#808080",
+              boxes: "#404040",
+              allskull: "#f0f0f0",
+            },
+          };
 
-    // Use white text if dark blue or green boxes:
-    const darkBackground =
-      obj.type === "boxes" &&
-      (obj.taxa === "Loxodonta" || obj.taxa === "Elephas");
-    const textColor = darkBackground ? "#fff" : "#000";
+          const addUnit = () => {
+            const newId =
+              units.length > 0 ? Math.max(...units.map((u) => u.id)) + 1 : 1;
+            setUnits([...units, { id: newId, topHeight: 37, bottomHeight: 37 }]);
+          };
 
-    // For library objects being dragged, make them invisible but keep space
-    const isDragging = draggedObject && draggedObject.id === obj.id;
-    const opacity = isDragging && isLibrary ? 0 : 1;
+          const updateShelfHeight = (unitId, isTop, newHeight) => {
+            const height = Math.max(
+              1,
+              Math.min(TOTAL_SHELF_HEIGHT - 1, parseInt(newHeight) || 1)
+            );
+            setUnits(
+              units.map((unit) =>
+                unit.id === unitId
+                  ? isTop
+                    ? {
+                        ...unit,
+                        topHeight: height,
+                        bottomHeight: TOTAL_SHELF_HEIGHT - height,
+                      }
+                    : {
+                        ...unit,
+                        topHeight: TOTAL_SHELF_HEIGHT - height,
+                        bottomHeight: height,
+                      }
+                  : unit
+              )
+            );
+          };
 
-    // For placed objects being dragged, hide them completely
-    if (isDragging && isPlaced) {
-      return null;
-    }
+          const parseCSV = (csvText) => {
+            const lines = csvText.trim().split("\n");
+            const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
 
-    // Check if object is rotated (width > depth means it was rotated from original orientation)
-    const isRotated = obj.width > obj.depth;
+            const catalogIndex = headers.findIndex((h) => h.includes("catalog"));
+            const heightIndex = headers.findIndex((h) => h.includes("height"));
+            const widthIndex = headers.findIndex((h) => h.includes("width"));
+            const depthIndex = headers.findIndex((h) => h.includes("depth"));
+            const taxaIndex = headers.findIndex(
+              (h) => h.includes("taxa") || h.includes("genus")
+            );
+            const contentsIndex = headers.findIndex(
+              (h) => h.includes("unit contents") || h.includes("contents")
+            );
 
-    const baseStyle = {
-      width: widthPx,
-      height: depthPx,
-      backgroundColor: colors[obj.taxa]?.[obj.type] || "#ccc",
-      border: "1px solid black",
-      cursor: "grab",
-      userSelect: "none",
-      padding: 4,
-      boxSizing: "border-box",
-      fontSize: 10,
-      color: textColor,
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "space-between",
-      margin: isLibrary ? 4 : 0,
-      borderRadius: 4,
-      boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-      position: isLibrary ? "static" : "absolute",
-      left: !isLibrary && isPlaced ? obj.x : undefined,
-      top: !isLibrary && isPlaced ? obj.y : undefined,
-      opacity: opacity,
-      overflow: "hidden",
-    };
+            return lines.slice(1).map((line, index) => {
+              const values = line.split(",").map((v) => v.trim());
 
-    return (
-      <div
-        key={obj.id}
-        style={baseStyle}
-        onMouseDown={(e) => handleMouseDown(e, obj, isPlaced)}
-        title={`${obj.catalog} (${obj.height}"H x ${obj.width}"W x ${obj.depth}"D)`}
-      >
-        <div
-          style={{
-            fontWeight: "bold",
-            fontSize: isRotated && depthPx < 60 ? 8 : 10,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            maxWidth: "100%",
-          }}
-        >
-          {obj.catalog}
-        </div>
-        <div style={{ fontSize: isRotated && depthPx < 60 ? 7 : 9 }}>
-          {(!isRotated || depthPx >= 40) && (
-            <>
-              H: {obj.height.toFixed(1)}
-              <br />
-              W: {obj.width.toFixed(1)}
-              <br />
-              D: {obj.depth.toFixed(1)}
-            </>
-          )}
-          {isRotated && depthPx < 40 && (
-            <span>{obj.width.toFixed(0)}×{obj.depth.toFixed(0)}</span>
-          )}
-        </div>
-        {obj.canRotate && !isDragging && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              console.log('Rotate clicked for:', obj.id, 'isPlaced:', isPlaced);
-              rotateObject(obj.id);
-            }}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-            }}
-            style={{
-              alignSelf: "flex-end",
-              fontSize: isRotated && depthPx < 50 ? 12 : 14,
-              cursor: "pointer",
-              padding: isRotated && depthPx < 50 ? "1px 4px" : "2px 6px",
-              marginTop: 2,
-              border: "1px solid",
-              borderColor: textColor === "#fff" ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.2)",
-              background: textColor === "#fff" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)",
-              color: textColor,
-              borderRadius: "3px",
-              transition: "all 0.2s ease",
-              lineHeight: 1,
-              zIndex: 10,
-              position: "relative",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = textColor === "#fff" ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.1)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = textColor === "#fff" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)";
-            }}
-            title="Rotate"
-          >
-            ↻
-          </button>
-        )}
-      </div>
-    );
-  };
+              let taxa = values[taxaIndex] || "Other";
+              if (taxa.toLowerCase().includes("loxodonta")) taxa = "Loxodonta";
+              else if (taxa.toLowerCase().includes("elephas")) taxa = "Elephas";
+              else taxa = "Other";
 
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        backgroundColor: "#f8f6f3",
-        backgroundImage: `
-          radial-gradient(circle at 10% 20%, rgba(139, 115, 85, 0.03) 0%, transparent 50%),
-          radial-gradient(circle at 80% 80%, rgba(92, 158, 173, 0.03) 0%, transparent 50%),
-          radial-gradient(circle at 40% 60%, rgba(139, 115, 85, 0.02) 0%, transparent 50%)
-        `,
-        position: "relative",
-        overflow: "hidden",
-      }}
-    >
-      {/* Background elephant silhouettes */}
-      <div
-        style={{
-          position: "fixed",
-          top: "10%",
-          right: "5%",
-          fontSize: "200px",
-          opacity: 0.03,
-          transform: "rotate(-15deg)",
-          pointerEvents: "none",
-          userSelect: "none",
-          zIndex: 0,
-        }}
-      >
-        🐘
-      </div>
-      <div
-        style={{
-          position: "fixed",
-          bottom: "10%",
-          left: "2%",
-          fontSize: "150px",
-          opacity: 0.03,
-          transform: "rotate(10deg) scaleX(-1)",
-          pointerEvents: "none",
-          userSelect: "none",
-          zIndex: 0,
-        }}
-      >
-        🐘
-      </div>
-      <div
-        style={{
-          position: "fixed",
-          top: "50%",
-          left: "40%",
-          fontSize: "100px",
-          opacity: 0.02,
-          transform: "rotate(-5deg)",
-          pointerEvents: "none",
-          userSelect: "none",
-          zIndex: 0,
-        }}
-      >
-        🐘
-      </div>
+              let type = values[contentsIndex] || "boxes";
+              type = type.toLowerCase();
+              if (type.includes("all skull")) type = "allskull";
+              else if (
+                type.includes("crania") ||
+                type.includes("cranium") ||
+                type.includes("skull")
+              )
+                type = "crania";
+              else if (type.includes("mandible")) type = "mandible";
+              else type = "boxes";
 
-      {/* Title Header */}
-      <div
-        style={{
-          backgroundColor: "#5C4A3B",
-          color: "white",
-          padding: "20px",
-          textAlign: "center",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
-          marginBottom: "20px",
-          position: "relative",
-          zIndex: 10,
-        }}
-      >
-        <h1
-          style={{
-            margin: 0,
-            fontSize: "32px",
-            fontWeight: "bold",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "16px",
-            textShadow: "2px 2px 4px rgba(0,0,0,0.3)",
-          }}
-        >
-          <span style={{ fontSize: "40px" }}>🐘</span>
-          Elephant Storage Planner
-          <span style={{ fontSize: "40px", transform: "scaleX(-1)" }}>🐘</span>
-        </h1>
-        <p style={{ margin: "8px 0 0 0", opacity: 0.9, fontSize: "16px" }}>
-          Organize and track your elephant specimen collection
-        </p>
-      </div>
+              return {
+                id: `obj-${index}`,
+                catalog: values[catalogIndex] || `Item ${index + 1}`,
+                height: parseFloat(values[heightIndex]) || 1,
+                width: parseFloat(values[widthIndex]) || 1,
+                depth: parseFloat(values[depthIndex]) || 1,
+                taxa,
+                type,
+                canRotate: !(type === "crania" || type === "allskull"),
+              };
+            });
+          };
 
-      {/* Main content */}
-      <div
-        style={{
-          display: "flex",
-          gap: "1rem",
-          fontFamily: "Arial, sans-serif",
-          padding: "0 10px 10px 10px",
-          position: "relative",
-          zIndex: 1,
-        }}
-      >
-        {/* Fixed sidebar for legend and controls */}
-        <div
-          style={{
-            width: 220,
-            position: "sticky",
-            top: 10,
-            height: "calc(100vh - 200px)",
-            overflowY: "auto",
+          const handleFileUpload = (event) => {
+            const file = event.target.files[0];
+            if (file) {
+              const reader = new FileReader();
+              reader.onload = (e) => {
+                const csvData = parseCSV(e.target.result);
+                setObjects(csvData);
+                setPlacedObjects([]);
+              };
+              reader.readAsText(file);
+            }
+          };
+
+          const rotateObject = (objectId) => {
+            // Update objects in library
+            setObjects((prev) =>
+              prev.map((obj) =>
+                obj.id === objectId && obj.canRotate
+                  ? { ...obj, width: obj.depth, depth: obj.width }
+                  : obj
+              )
+            );
+            
+            // Update placed objects on shelves
+            setPlacedObjects((prev) =>
+              prev.map((obj) =>
+                obj.id === objectId && obj.canRotate
+                  ? { ...obj, width: obj.depth, depth: obj.width }
+                  : obj
+              )
+            );
+          };
+
+          const handleMouseDown = (e, object, isPlaced = false) => {
+            e.preventDefault();
+            
+            // Don't start drag if we're editing
+            if (editingObject) return;
+            
+            const rect = e.currentTarget.getBoundingClientRect();
+            
+            // Store the initial position and mouse offset
+            setDraggedObject({
+              ...object,
+              wasPlaced: isPlaced,
+              originalShelfId: object.shelfId,
+              // Store current screen position
+              x: rect.left,
+              y: rect.top,
+            });
+            
+            // Store where in the object the mouse clicked
+            setDragOffset({
+              x: e.clientX - rect.left,
+              y: e.clientY - rect.top,
+            });
+          };
+
+          const handleMouseMove = useCallback(
+            (e) => {
+              if (!draggedObject) return;
+              // Position the object so it stays under the cursor where it was grabbed
+              const x = e.clientX - dragOffset.x;
+              const y = e.clientY - dragOffset.y;
+              setDraggedObject((prev) => ({ ...prev, x, y }));
+            },
+            [draggedObject, dragOffset]
+          );
+
+          const handleMouseUp = useCallback(() => {
+            if (!draggedObject) return;
+
+            const shelves = document.querySelectorAll(".shelf");
+            let droppedOnShelf = false;
+
+            shelves.forEach((shelf) => {
+              const rect = shelf.getBoundingClientRect();
+              const mouseX = draggedObject.x + dragOffset.x;
+              const mouseY = draggedObject.y + dragOffset.y;
+
+              if (
+                mouseX >= rect.left &&
+                mouseX <= rect.right &&
+                mouseY >= rect.top &&
+                mouseY <= rect.bottom
+              ) {
+                const shelfId = shelf.dataset.shelfId;
+                const [unitId, position] = shelfId.split("-");
+                const unit = units.find((u) => u.id === parseInt(unitId));
+                const shelfHeight =
+                  position === "top" ? unit.topHeight : unit.bottomHeight;
+
+                if (draggedObject.height <= shelfHeight) {
+                  const objectWidthPx = draggedObject.width * SCALE;
+                  const objectDepthPx = draggedObject.depth * SCALE;
+
+                  // Calculate position relative to the shelf
+                  let objX = mouseX - rect.left - dragOffset.x;
+                  let objY = mouseY - rect.top - dragOffset.y;
+
+                  objX = Math.max(0, Math.min(objX, rect.width - objectWidthPx));
+                  objY = Math.max(0, Math.min(objY, rect.height - objectDepthPx));
+
+                  // Remove from original array first:
+                  if (draggedObject.wasPlaced) {
+                    setPlacedObjects((prev) =>
+                      prev.filter((obj) => obj.id !== draggedObject.id)
+                    );
+                  } else {
+                    setObjects((prev) =>
+                      prev.filter((obj) => obj.id !== draggedObject.id)
+                    );
+                  }
+
+                  // Add to placedObjects with shelf info and position:
+                  setPlacedObjects((prev) => [
+                    ...prev,
+                    {
+                      ...draggedObject,
+                      x: objX,
+                      y: objY,
+                      shelfId,
+                    },
+                  ]);
+
+                  droppedOnShelf = true;
+                }
+              }
+            });
+
+            if (!droppedOnShelf) {
+              // If draggedObject was placed but dropped outside shelf, remove from placed and add back to objects
+              if (draggedObject.wasPlaced) {
+                setPlacedObjects((prev) =>
+                  prev.filter((obj) => obj.id !== draggedObject.id)
+                );
+                const { x, y, wasPlaced, originalShelfId, ...cleanObject } = draggedObject;
+                setObjects((prev) => [...prev, cleanObject]);
+              }
+              // If draggedObject was from library and dropped outside, do nothing (stay in library)
+            }
+
+            setDraggedObject(null);
+          }, [draggedObject, units, dragOffset]);
+
+          useEffect(() => {
+            if (draggedObject) {
+              document.addEventListener("mousemove", handleMouseMove);
+              document.addEventListener("mouseup", handleMouseUp);
+              return () => {
+                document.removeEventListener("mousemove", handleMouseMove);
+                document.removeEventListener("mouseup", handleMouseUp);
+              };
+            }
+          }, [draggedObject, handleMouseMove, handleMouseUp]);
+
+          const sortedObjects = useMemo(() => {
+            return [...objects].sort((a, b) => {
+              if (a.taxa !== b.taxa) return a.taxa.localeCompare(b.taxa);
+              if (sortMode === "catalog") return a.catalog.localeCompare(b.catalog);
+              return b.height - a.height;
+            });
+          }, [objects, sortMode]);
+
+          const toggleSortMode = () => {
+            setSortMode((prev) => (prev === "catalog" ? "height" : "catalog"));
+          };
+
+          const [hoveredButton, setHoveredButton] = useState(null);
+
+          const buttonStyle = {
+            padding: "8px 16px",
             border: "2px solid #8B7355",
-            padding: 12,
-            boxSizing: "border-box",
-            backgroundColor: "#faf8f5",
-            userSelect: "none",
-            flexShrink: 0,
-            borderRadius: "8px",
-            boxShadow: "0 2px 8px rgba(139, 115, 85, 0.2)",
-          }}
-        >
-        <h3 style={{ 
-          color: "#5C4A3B",
-          borderBottom: "2px solid #8B7355",
-          paddingBottom: "8px",
-          marginBottom: "16px",
-          fontSize: "18px",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px"
-        }}>
-          <span style={{ fontSize: "24px" }}>🐘</span> Controls
-        </h3>
-        <input
-          type="file"
-          accept=".csv"
-          onChange={handleFileUpload}
-          ref={fileInputRef}
-          style={{ marginBottom: 10 }}
-        />
-        <div style={{ marginBottom: 10 }}>
-          <button 
-            onClick={toggleSortMode} 
-            style={{
-              ...buttonStyle,
-              ...(hoveredButton === 'sort' ? buttonHoverStyle : {}),
-              marginRight: 8
-            }}
-            onMouseEnter={() => setHoveredButton('sort')}
-            onMouseLeave={() => setHoveredButton(null)}
-          >
-            Sort by: {sortMode === "catalog" ? "Catalog" : "Height"}
-          </button>
-          <button 
-            onClick={addUnit} 
-            style={{
-              ...buttonStyle,
-              ...(hoveredButton === 'add' ? buttonHoverStyle : {}),
-              marginRight: 8
-            }}
-            onMouseEnter={() => setHoveredButton('add')}
-            onMouseLeave={() => setHoveredButton(null)}
-          >
-            Add Unit
-          </button>
-          <button 
-            onClick={exportReport}
-            style={{
-              ...buttonStyle,
-              ...(hoveredButton === 'export' ? buttonHoverStyle : {})
-            }}
-            onMouseEnter={() => setHoveredButton('export')}
-            onMouseLeave={() => setHoveredButton(null)}
-          >
-            Export Report
-          </button>
-        </div>
+            borderRadius: "6px",
+            background: "linear-gradient(to bottom, #fdfcfb, #f5f3f0)",
+            cursor: "pointer",
+            fontSize: "14px",
+            color: "#5C4A3B",
+            fontWeight: "600",
+            transition: "all 0.2s ease",
+            boxShadow: "0 2px 4px rgba(139, 115, 85, 0.2)",
+          };
 
-        <h4 style={{ color: "#5C4A3B", marginTop: "20px", marginBottom: "12px" }}>
-          🎨 Color Legend
-        </h4>
-        {Object.entries(colors).map(([taxa, types]) => (
-          <div key={taxa} style={{ marginBottom: 8 }}>
-            <strong>{taxa}</strong>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 6,
-                marginTop: 4,
-              }}
-            >
-              {Object.entries(types).map(([type, color]) => (
-                <div
-                  key={type}
-                  style={{ display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  <div
-                    style={{
-                      width: 16,
-                      height: 16,
-                      backgroundColor: color,
-                      border: "1px solid #000",
-                    }}
-                  ></div>
-                  <div style={{ fontSize: 12, textTransform: "capitalize" }}>
-                    {type}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+          const buttonHoverStyle = {
+            background: "linear-gradient(to bottom, #f5f3f0, #ede9e3)",
+            borderColor: "#6B5A48",
+            boxShadow: "0 3px 6px rgba(139, 115, 85, 0.3)",
+            transform: "translateY(-1px)",
+          };
 
-      {/* Object library */}
-      <div
-        style={{
-          width: 350,
-          height: 600,
-          border: "2px solid #8B7355",
-          overflowY: "auto",
-          padding: 8,
-          boxSizing: "border-box",
-          backgroundColor: "#fdfcfb",
-          userSelect: "none",
-          position: "relative",
-          borderRadius: "8px",
-          boxShadow: "0 2px 8px rgba(139, 115, 85, 0.2)",
-        }}
-      >
-        <h3 style={{ 
-          color: "#5C4A3B",
-          borderBottom: "2px solid #8B7355",
-          paddingBottom: "8px",
-          marginBottom: "12px",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px"
-        }}>
-          <span style={{ fontSize: "20px" }}>📦</span> Library ({sortedObjects.length})
-        </h3>
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "8px",
-            minHeight: 300,
-          }}
-        >
-          {sortedObjects.map((obj) => renderObject(obj, false, true))}
-        </div>
-        {/* Render dragged object if from library */}
-        {draggedObject && !draggedObject.wasPlaced && (
-          <div
-            style={{
-              position: "fixed",
-              pointerEvents: "none",
-              left: draggedObject.x,
-              top: draggedObject.y,
-              zIndex: 1000,
-              width: draggedObject.width * SCALE,
-              height: draggedObject.depth * SCALE,
-              backgroundColor: colors[draggedObject.taxa]?.[draggedObject.type] || "#ccc",
-              border: "1px solid black",
+          const updateObjectProperties = (objectId, updates) => {
+            // Update in library
+            setObjects((prev) =>
+              prev.map((obj) =>
+                obj.id === objectId ? { ...obj, ...updates } : obj
+              )
+            );
+            
+            // Update in placed objects
+            setPlacedObjects((prev) =>
+              prev.map((obj) =>
+                obj.id === objectId ? { ...obj, ...updates } : obj
+              )
+            );
+          };
+
+          const startEditing = (objectId) => {
+            setEditingObject(objectId);
+          };
+
+          const stopEditing = () => {
+            setEditingObject(null);
+          };
+            // Create HTML content for the new window
+            let htmlContent = `
+              <!DOCTYPE html>
+              <html>
+              <head>
+                <title>Shelf Planner Report</title>
+                <style>
+                  body {
+                    font-family: Arial, sans-serif;
+                    padding: 20px;
+                    line-height: 1.6;
+                    background-color: #f8f6f3;
+                  }
+                  h1 {
+                    color: #5C4A3B;
+                    border-bottom: 3px solid #8B7355;
+                    padding-bottom: 10px;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                  }
+                  h1:before {
+                    content: "🐘";
+                    font-size: 1.2em;
+                  }
+                  h2 {
+                    color: #6B5A48;
+                    margin-top: 30px;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                  }
+                  h2:before {
+                    content: "🗄️";
+                  }
+                  h3 {
+                    color: #7A6858;
+                    margin-top: 20px;
+                  }
+                  table {
+                    border-collapse: collapse;
+                    width: 100%;
+                    margin-top: 10px;
+                    background-color: white;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                  }
+                  th, td {
+                    border: 1px solid #d4c8bd;
+                    padding: 8px;
+                    text-align: left;
+                  }
+                  th {
+                    background-color: #8B7355;
+                    color: white;
+                    font-weight: bold;
+                  }
+                  tr:nth-child(even) {
+                    background-color: #faf8f5;
+                  }
+                  .timestamp {
+                    color: #888;
+                    font-size: 14px;
+                  }
+                  @media print {
+                    body {
+                      padding: 10px;
+                    }
+                  }
+                </style>
+              </head>
+              <body>
+                <h1>Shelf Planner Report</h1>
+                <p class="timestamp">Generated: ${new Date().toLocaleString()}</p>
+            `;
+
+            units.forEach((unit) => {
+              htmlContent += `<h2>Unit ${unit.id}</h2>`;
+              
+              ["top", "bottom"].forEach((position) => {
+                const shelfId = `${unit.id}-${position}`;
+                const shelfHeight = position === "top" ? unit.topHeight : unit.bottomHeight;
+                const contents = placedObjects.filter((obj) => obj.shelfId === shelfId);
+                
+                htmlContent += `
+                  <h3>${position.charAt(0).toUpperCase() + position.slice(1)} Shelf (Height: ${shelfHeight} inches)</h3>
+                `;
+                
+                if (contents.length > 0) {
+                  htmlContent += `
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Catalog Number</th>
+                          <th>Taxa</th>
+                          <th>Contents Type</th>
+                          <th>Height (in)</th>
+                          <th>Width (in)</th>
+                          <th>Depth (in)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                  `;
+                  
+                  contents.forEach((obj) => {
+                    htmlContent += `
+                      <tr>
+                        <td>${obj.catalog}</td>
+                        <td>${obj.taxa}</td>
+                        <td>${obj.type.charAt(0).toUpperCase() + obj.type.slice(1)}</td>
+                        <td>${obj.height.toFixed(1)}</td>
+                        <td>${obj.width.toFixed(1)}</td>
+                        <td>${obj.depth.toFixed(1)}</td>
+                      </tr>
+                    `;
+                  });
+                  
+                  htmlContent += `
+                      </tbody>
+                    </table>
+                  `;
+                } else {
+                  htmlContent += `<p>No items placed on this shelf.</p>`;
+                }
+              });
+            });
+
+            htmlContent += `
+              </body>
+              </html>
+            `;
+
+            // Open new window with the content
+            const newWindow = window.open('', 'ShelfPlannerReport', 'width=800,height=600');
+            if (newWindow) {
+              newWindow.document.write(htmlContent);
+              newWindow.document.close();
+            } else {
+              alert('Please allow pop-ups to view the report.');
+            }
+          };
+
+          const renderObject = (obj, isPlaced, isLibrary = false) => {
+            const widthPx = obj.width * SCALE;
+            const depthPx = obj.depth * SCALE;
+
+            // Use white text if dark blue or green boxes:
+            const darkBackground =
+              obj.type === "boxes" &&
+              (obj.taxa === "Loxodonta" || obj.taxa === "Elephas");
+            const textColor = darkBackground ? "#fff" : "#000";
+
+            // For library objects being dragged, make them invisible but keep space
+            const isDragging = draggedObject && draggedObject.id === obj.id;
+            const opacity = isDragging && isLibrary ? 0 : 1;
+
+            // For placed objects being dragged, hide them completely
+            if (isDragging && isPlaced) {
+              return null;
+            }
+
+            // Check if object is rotated (width > depth means it was rotated from original orientation)
+            const isRotated = obj.width > obj.depth;
+            const isEditing = editingObject === obj.id;
+
+            const baseStyle = {
+              width: widthPx,
+              height: depthPx,
+              backgroundColor: colors[obj.taxa]?.[obj.type] || "#ccc",
+              border: isEditing ? "2px solid #ff6b6b" : "1px solid black",
+              cursor: isEditing ? "default" : "grab",
+              userSelect: "none",
               padding: 4,
               boxSizing: "border-box",
               fontSize: 10,
-              color: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "#fff" : "#000",
+              color: textColor,
               display: "flex",
               flexDirection: "column",
               justifyContent: "space-between",
+              margin: isLibrary ? 4 : 0,
               borderRadius: 4,
-              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-            }}
-          >
-            <div
-              style={{
-                fontWeight: "bold",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {draggedObject.catalog}
-            </div>
-            <div style={{ fontSize: 9 }}>
-              H: {draggedObject.height.toFixed(1)}
-              <br />
-              W: {draggedObject.width.toFixed(1)}
-              <br />
-              D: {draggedObject.depth.toFixed(1)}
-            </div>
-            {draggedObject.canRotate && (
+              boxShadow: isEditing ? "0 0 8px rgba(255,107,107,0.5)" : "0 1px 3px rgba(0,0,0,0.2)",
+              position: isLibrary ? "static" : "absolute",
+              left: !isLibrary && isPlaced ? obj.x : undefined,
+              top: !isLibrary && isPlaced ? obj.y : undefined,
+              opacity: opacity,
+              overflow: "hidden",
+            };
+
+            if (isEditing) {
+              return (
+                <div
+                  key={obj.id}
+                  style={baseStyle}
+                  title="Editing mode - Click outside or press Done to finish"
+                >
+                  <div style={{ fontSize: 9, fontWeight: "bold" }}>
+                    {obj.catalog}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <select
+                      value={obj.taxa}
+                      onChange={(e) => updateObjectProperties(obj.id, { taxa: e.target.value })}
+                      style={{
+                        fontSize: 8,
+                        padding: "1px 2px",
+                        border: "1px solid #ccc",
+                        borderRadius: 2,
+                        backgroundColor: textColor === "#fff" ? "rgba(255,255,255,0.2)" : "white",
+                        color: textColor === "#fff" ? "white" : "black",
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <option value="Loxodonta" style={{color: "black"}}>Loxodonta</option>
+                      <option value="Elephas" style={{color: "black"}}>Elephas</option>
+                      <option value="Other" style={{color: "black"}}>Other</option>
+                    </select>
+                    <div style={{ display: "flex", gap: 2 }}>
+                      <input
+                        type="number"
+                        value={obj.height}
+                        onChange={(e) => updateObjectProperties(obj.id, { height: parseFloat(e.target.value) || 1 })}
+                        style={{
+                          width: "25%",
+                          fontSize: 8,
+                          padding: "1px",
+                          border: "1px solid #ccc",
+                          borderRadius: 2,
+                          backgroundColor: textColor === "#fff" ? "rgba(255,255,255,0.2)" : "white",
+                          color: textColor === "#fff" ? "white" : "black",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Height"
+                      />
+                      <input
+                        type="number"
+                        value={obj.width}
+                        onChange={(e) => updateObjectProperties(obj.id, { width: parseFloat(e.target.value) || 1 })}
+                        style={{
+                          width: "25%",
+                          fontSize: 8,
+                          padding: "1px",
+                          border: "1px solid #ccc",
+                          borderRadius: 2,
+                          backgroundColor: textColor === "#fff" ? "rgba(255,255,255,0.2)" : "white",
+                          color: textColor === "#fff" ? "white" : "black",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Width"
+                      />
+                      <input
+                        type="number"
+                        value={obj.depth}
+                        onChange={(e) => updateObjectProperties(obj.id, { depth: parseFloat(e.target.value) || 1 })}
+                        style={{
+                          width: "25%",
+                          fontSize: 8,
+                          padding: "1px",
+                          border: "1px solid #ccc",
+                          borderRadius: 2,
+                          backgroundColor: textColor === "#fff" ? "rgba(255,255,255,0.2)" : "white",
+                          color: textColor === "#fff" ? "white" : "black",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Depth"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      stopEditing();
+                    }}
+                    style={{
+                      fontSize: 10,
+                      padding: "2px 6px",
+                      border: "1px solid",
+                      borderColor: textColor === "#fff" ? "rgba(255,255,255,0.5)" : "#666",
+                      background: textColor === "#fff" ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.1)",
+                      color: textColor,
+                      borderRadius: "3px",
+                      cursor: "pointer",
+                      alignSelf: "center",
+                    }}
+                  >
+                    Done
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div
+                key={obj.id}
+                style={baseStyle}
+                onMouseDown={(e) => handleMouseDown(e, obj, isPlaced)}
+                onDoubleClick={() => startEditing(obj.id)}
+                title={`${obj.catalog} (${obj.height}"H x ${obj.width}"W x ${obj.depth}"D) - Double-click to edit`}
+              >
+                <div
+                  style={{
+                    fontWeight: "bold",
+                    fontSize: isRotated && depthPx < 60 ? 8 : 10,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    maxWidth: "100%",
+                  }}
+                >
+                  {obj.catalog}
+                </div>
+                <div style={{ fontSize: isRotated && depthPx < 60 ? 7 : 9 }}>
+                  {(!isRotated || depthPx >= 40) && (
+                    <>
+                      H: {obj.height.toFixed(1)}
+                      <br />
+                      W: {obj.width.toFixed(1)}
+                      <br />
+                      D: {obj.depth.toFixed(1)}
+                    </>
+                  )}
+                  {isRotated && depthPx < 40 && (
+                    <span>{obj.width.toFixed(0)}×{obj.depth.toFixed(0)}</span>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 4, alignSelf: "flex-end" }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startEditing(obj.id);
+                    }}
+                    style={{
+                      fontSize: 11,
+                      cursor: "pointer",
+                      padding: "1px 4px",
+                      border: "1px solid",
+                      borderColor: textColor === "#fff" ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.2)",
+                      background: textColor === "#fff" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)",
+                      color: textColor,
+                      borderRadius: "3px",
+                      transition: "all 0.2s ease",
+                      lineHeight: 1,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = textColor === "#fff" ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.1)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = textColor === "#fff" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)";
+                    }}
+                    title="Edit properties"
+                  >
+                    ✏️
+                  </button>
+                  {obj.canRotate && !isDragging && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        rotateObject(obj.id);
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                      }}
+                      style={{
+                        alignSelf: "flex-end",
+                        fontSize: isRotated && depthPx < 50 ? 12 : 14,
+                        cursor: "pointer",
+                        padding: isRotated && depthPx < 50 ? "1px 4px" : "2px 6px",
+                        border: "1px solid",
+                        borderColor: textColor === "#fff" ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.2)",
+                        background: textColor === "#fff" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)",
+                        color: textColor,
+                        borderRadius: "3px",
+                        transition: "all 0.2s ease",
+                        lineHeight: 1,
+                        zIndex: 10,
+                        position: "relative",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = textColor === "#fff" ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.1)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = textColor === "#fff" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)";
+                      }}
+                      title="Rotate"
+                    >
+                      ↻
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          };
+
+          // Helper function to render dragged ghost
+          const renderDraggedGhost = () => {
+            if (!draggedObject) return null;
+            
+            const widthPx = draggedObject.width * SCALE;
+            const depthPx = draggedObject.depth * SCALE;
+            const darkBackground =
+              draggedObject.type === "boxes" &&
+              (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas");
+            const textColor = darkBackground ? "#fff" : "#000";
+            
+            return (
               <div
                 style={{
-                  alignSelf: "flex-end",
-                  fontSize: 14,
-                  padding: "2px 6px",
-                  marginTop: 4,
-                  border: "1px solid",
-                  borderColor: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.2)",
-                  background: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)",
-                  color: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "#fff" : "#000",
-                  borderRadius: "3px",
+                  position: "fixed",
+                  pointerEvents: "none",
+                  left: draggedObject.x,
+                  top: draggedObject.y,
+                  zIndex: 1000,
+                  width: widthPx,
+                  height: depthPx,
+                  backgroundColor: colors[draggedObject.taxa]?.[draggedObject.type] || "#ccc",
+                  border: "1px solid black",
+                  padding: 4,
+                  boxSizing: "border-box",
+                  fontSize: 10,
+                  color: textColor,
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                  borderRadius: 4,
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                  opacity: 0.9,
                 }}
               >
-                ↻
+                <div
+                  style={{
+                    fontWeight: "bold",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {draggedObject.catalog}
+                </div>
+                <div style={{ fontSize: 9 }}>
+                  H: {draggedObject.height.toFixed(1)}
+                  <br />
+                  W: {draggedObject.width.toFixed(1)}
+                  <br />
+                  D: {draggedObject.depth.toFixed(1)}
+                </div>
               </div>
-            )}
-            {draggedObject.canRotate && (
-              <div
-                style={{
-                  alignSelf: "flex-end",
-                  fontSize: 14,
-                  padding: "2px 6px",
-                  marginTop: 4,
-                  border: "1px solid",
-                  borderColor: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.2)",
-                  background: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)",
-                  color: (draggedObject.type === "boxes" && (draggedObject.taxa === "Loxodonta" || draggedObject.taxa === "Elephas")) ? "#fff" : "#000",
-                  borderRadius: "3px",
-                }}
-              >
-                ↻
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Shelf units and placed objects */}
-      <div
-        style={{
-          flexGrow: 1,
-          overflowY: "auto",
-          maxHeight: 600,
-          position: "relative",
-          backgroundColor: "#ffffff",
-          padding: "16px",
-          borderRadius: "8px",
-          border: "2px solid #8B7355",
-          boxShadow: "0 2px 8px rgba(139, 115, 85, 0.2)",
-        }}
-      >
-        {units.map((unit) => {
-          // Check if top shelf has objects taller than shelf height
-          const topShelfObjects = placedObjects.filter(
-            (obj) => obj.shelfId === `${unit.id}-top`
-          );
-          const topShelfHeight = unit.topHeight;
-          const topShelfTooTall = topShelfObjects.some(
-            (obj) => obj.height > topShelfHeight
-          );
-
-          // Same for bottom shelf
-          const bottomShelfObjects = placedObjects.filter(
-            (obj) => obj.shelfId === `${unit.id}-bottom`
-          );
-          const bottomShelfHeight = unit.bottomHeight;
-          const bottomShelfTooTall = bottomShelfObjects.some(
-            (obj) => obj.height > bottomShelfHeight
-          );
+            );
+          };
 
           return (
-            <div key={unit.id} style={{ marginBottom: "2rem" }}>
-              <div style={{ 
-                color: "#5C4A3B", 
-                fontSize: "18px", 
-                fontWeight: "bold",
-                marginBottom: "12px",
-                display: "flex",
-                alignItems: "center",
-                gap: "8px"
-              }}>
-                <span style={{ fontSize: "20px" }}>🗄️</span> Unit {unit.id}
-              </div>
-
+            <div
+              style={{
+                minHeight: "100vh",
+                backgroundColor: "#f8f6f3",
+                backgroundImage: `
+                  radial-gradient(circle at 10% 20%, rgba(139, 115, 85, 0.03) 0%, transparent 50%),
+                  radial-gradient(circle at 80% 80%, rgba(92, 158, 173, 0.03) 0%, transparent 50%),
+                  radial-gradient(circle at 40% 60%, rgba(139, 115, 85, 0.02) 0%, transparent 50%)
+                `,
+                position: "relative",
+                overflow: "hidden",
+              }}
+              onClick={() => {
+                // Exit edit mode when clicking outside
+                if (editingObject) stopEditing();
+              }}
+            >
+              {/* Background elephant silhouettes */}
               <div
-                className="shelf"
-                data-shelf-id={`${unit.id}-top`}
                 style={{
-                  width: SHELF_WIDTH_IN * SCALE,
-                  height: SHELF_DEPTH_IN * SCALE,
-                  border: `3px solid ${topShelfTooTall ? "#e74c3c" : "#7CB342"}`,
-                  position: "relative",
-                  marginBottom: 6,
-                  backgroundColor: topShelfTooTall ? "#ffe6e6" : "#fefefe",
+                  position: "fixed",
+                  top: "10%",
+                  right: "5%",
+                  fontSize: "200px",
+                  opacity: 0.03,
+                  transform: "rotate(-15deg)",
+                  pointerEvents: "none",
                   userSelect: "none",
-                  borderRadius: "4px",
-                  boxShadow: "inset 0 2px 4px rgba(0,0,0,0.1)",
-                  backgroundImage: "linear-gradient(to bottom, rgba(139, 115, 85, 0.02), rgba(139, 115, 85, 0.05))",
+                  zIndex: 0,
                 }}
               >
-                {topShelfObjects.map((obj) => renderObject(obj, true))}
+                🐘
               </div>
-              <label style={{ color: "#5C4A3B", fontWeight: "500" }}>
-                📏 Top Shelf Height (inches):&nbsp;
-                <input
-                  type="number"
-                  min={1}
-                  max={TOTAL_SHELF_HEIGHT - 1}
-                  value={unit.topHeight}
-                  onChange={(e) =>
-                    updateShelfHeight(unit.id, true, e.target.value)
-                  }
-                  style={{ 
-                    width: 60,
-                    padding: "4px 8px",
-                    border: "1px solid #8B7355",
-                    borderRadius: "4px",
-                    backgroundColor: "#fdfcfb"
-                  }}
-                  title="Top shelf height (vertical in inches)"
-                />
-              </label>
-
               <div
-                className="shelf"
-                data-shelf-id={`${unit.id}-bottom`}
                 style={{
-                  width: SHELF_WIDTH_IN * SCALE,
-                  height: SHELF_DEPTH_IN * SCALE,
-                  border: `3px solid ${bottomShelfTooTall ? "#e74c3c" : "#5C9EAD"}`,
-                  position: "relative",
-                  backgroundColor: bottomShelfTooTall ? "#ffe6e6" : "#fefefe",
+                  position: "fixed",
+                  bottom: "10%",
+                  left: "2%",
+                  fontSize: "150px",
+                  opacity: 0.03,
+                  transform: "rotate(10deg) scaleX(-1)",
+                  pointerEvents: "none",
                   userSelect: "none",
-                  marginTop: 12,
-                  marginBottom: 6,
-                  borderRadius: "4px",
-                  boxShadow: "inset 0 2px 4px rgba(0,0,0,0.1)",
-                  backgroundImage: "linear-gradient(to bottom, rgba(92, 158, 173, 0.02), rgba(92, 158, 173, 0.05))",
+                  zIndex: 0,
                 }}
               >
-                {bottomShelfObjects.map((obj) => renderObject(obj, true))}
+                🐘
               </div>
-              <label style={{ color: "#5C4A3B", fontWeight: "500" }}>
-                📏 Bottom Shelf Height (inches):&nbsp;
-                <input
-                  type="number"
-                  min={1}
-                  max={TOTAL_SHELF_HEIGHT - 1}
-                  value={unit.bottomHeight}
-                  onChange={(e) =>
-                    updateShelfHeight(unit.id, false, e.target.value)
-                  }
-                  style={{ 
-                    width: 60,
-                    padding: "4px 8px",
-                    border: "1px solid #8B7355",
-                    borderRadius: "4px",
-                    backgroundColor: "#fdfcfb"
+              <div
+                style={{
+                  position: "fixed",
+                  top: "50%",
+                  left: "40%",
+                  fontSize: "100px",
+                  opacity: 0.02,
+                  transform: "rotate(-5deg)",
+                  pointerEvents: "none",
+                  userSelect: "none",
+                  zIndex: 0,
+                }}
+              >
+                🐘
+              </div>
+
+              {/* Title Header */}
+              <div
+                style={{
+                  backgroundColor: "#5C4A3B",
+                  color: "white",
+                  padding: "20px",
+                  textAlign: "center",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                  marginBottom: "20px",
+                  position: "relative",
+                  zIndex: 10,
+                }}
+              >
+                <h1
+                  style={{
+                    margin: 0,
+                    fontSize: "32px",
+                    fontWeight: "bold",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "16px",
+                    textShadow: "2px 2px 4px rgba(0,0,0,0.3)",
                   }}
-                  title="Bottom shelf height (vertical in inches)"
-                />
-              </label>
+                >
+                  <span style={{ fontSize: "40px" }}>🐘</span>
+                  Elephant Storage Planner
+                  <span style={{ fontSize: "40px", transform: "scaleX(-1)" }}>🐘</span>
+                </h1>
+                <p style={{ margin: "8px 0 0 0", opacity: 0.9, fontSize: "16px" }}>
+                  Organize and track your elephant specimen collection
+                </p>
+              </div>
+
+              {/* Main content */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: "1rem",
+                  fontFamily: "Arial, sans-serif",
+                  padding: "0 10px 10px 10px",
+                  position: "relative",
+                  zIndex: 1,
+                }}
+              >
+                {/* Fixed sidebar for legend and controls */}
+                <div
+                  style={{
+                    width: 220,
+                    position: "sticky",
+                    top: 10,
+                    height: "calc(100vh - 200px)",
+                    overflowY: "auto",
+                    border: "2px solid #8B7355",
+                    padding: 12,
+                    boxSizing: "border-box",
+                    backgroundColor: "#faf8f5",
+                    userSelect: "none",
+                    flexShrink: 0,
+                    borderRadius: "8px",
+                    boxShadow: "0 2px 8px rgba(139, 115, 85, 0.2)",
+                  }}
+                >
+                  <h3 style={{ 
+                    color: "#5C4A3B",
+                    borderBottom: "2px solid #8B7355",
+                    paddingBottom: "8px",
+                    marginBottom: "16px",
+                    fontSize: "18px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px"
+                  }}>
+                    <span style={{ fontSize: "24px" }}>🐘</span> Controls
+                  </h3>
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={handleFileUpload}
+                    ref={fileInputRef}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <div style={{ marginBottom: 10 }}>
+                    <button 
+                      onClick={toggleSortMode} 
+                      style={{
+                        ...buttonStyle,
+                        ...(hoveredButton === 'sort' ? buttonHoverStyle : {}),
+                        marginRight: 8
+                      }}
+                      onMouseEnter={() => setHoveredButton('sort')}
+                      onMouseLeave={() => setHoveredButton(null)}
+                    >
+                      Add Unit
+                    </button>
+                    <button 
+                      onClick={exportReport}
+                      style={{
+                        ...buttonStyle,
+                        ...(hoveredButton === 'export' ? buttonHoverStyle : {})
+                      }}
+                      onMouseEnter={() => setHoveredButton('export')}
+                      onMouseLeave={() => setHoveredButton(null)}
+                    >
+                      Export Report
+                    </button>
+                  </div>
+
+                  <h4 style={{ color: "#5C4A3B", marginTop: "20px", marginBottom: "12px" }}>
+                    🎨 Color Legend
+                  </h4>
+                  {Object.entries(colors).map(([taxa, types]) => (
+                    <div key={taxa} style={{ marginBottom: 8 }}>
+                      <strong>{taxa}</strong>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 6,
+                          marginTop: 4,
+                        }}
+                      >
+                        {Object.entries(types).map(([type, color]) => (
+                          <div
+                            key={type}
+                            style={{ display: "flex", alignItems: "center", gap: 4 }}
+                          >
+                            <div
+                              style={{
+                                width: 16,
+                                height: 16,
+                                backgroundColor: color,
+                                border: "1px solid #000",
+                              }}
+                            ></div>
+                            <div style={{ fontSize: 12, textTransform: "capitalize" }}>
+                              {type}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Object library */}
+                <div
+                  style={{
+                    width: 350,
+                    height: 600,
+                    border: "2px solid #8B7355",
+                    overflowY: "auto",
+                    padding: 8,
+                    boxSizing: "border-box",
+                    backgroundColor: "#fdfcfb",
+                    userSelect: "none",
+                    position: "relative",
+                    borderRadius: "8px",
+                    boxShadow: "0 2px 8px rgba(139, 115, 85, 0.2)",
+                  }}
+                >
+                  <h3 style={{ 
+                    color: "#5C4A3B",
+                    borderBottom: "2px solid #8B7355",
+                    paddingBottom: "8px",
+                    marginBottom: "12px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px"
+                  }}>
+                    <span style={{ fontSize: "20px" }}>📦</span> Library ({sortedObjects.length})
+                  </h3>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                      minHeight: 300,
+                    }}
+                  >
+                    {sortedObjects.map((obj) => renderObject(obj, false, true))}
+                  </div>
+                </div>
+
+                {/* Shelf units and placed objects */}
+                <div
+                  style={{
+                    flexGrow: 1,
+                    overflowY: "auto",
+                    maxHeight: 600,
+                    position: "relative",
+                    backgroundColor: "#ffffff",
+                    padding: "16px",
+                    borderRadius: "8px",
+                    border: "2px solid #8B7355",
+                    boxShadow: "0 2px 8px rgba(139, 115, 85, 0.2)",
+                  }}
+                >
+                  {units.map((unit) => {
+                    // Check if top shelf has objects taller than shelf height
+                    const topShelfObjects = placedObjects.filter(
+                      (obj) => obj.shelfId === `${unit.id}-top`
+                    );
+                    const topShelfHeight = unit.topHeight;
+                    const topShelfTooTall = topShelfObjects.some(
+                      (obj) => obj.height > topShelfHeight
+                    );
+
+                    // Same for bottom shelf
+                    const bottomShelfObjects = placedObjects.filter(
+                      (obj) => obj.shelfId === `${unit.id}-bottom`
+                    );
+                    const bottomShelfHeight = unit.bottomHeight;
+                    const bottomShelfTooTall = bottomShelfObjects.some(
+                      (obj) => obj.height > bottomShelfHeight
+                    );
+
+                    return (
+                      <div key={unit.id} style={{ marginBottom: "2rem" }}>
+                        <div style={{ 
+                          color: "#5C4A3B", 
+                          fontSize: "18px", 
+                          fontWeight: "bold",
+                          marginBottom: "12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px"
+                        }}>
+                          <span style={{ fontSize: "20px" }}>🗄️</span> Unit {unit.id}
+                        </div>
+
+                        <div
+                          className="shelf"
+                          data-shelf-id={`${unit.id}-top`}
+                          style={{
+                            width: SHELF_WIDTH_IN * SCALE,
+                            height: SHELF_DEPTH_IN * SCALE,
+                            border: `3px solid ${topShelfTooTall ? "#e74c3c" : "#7CB342"}`,
+                            position: "relative",
+                            marginBottom: 6,
+                            backgroundColor: topShelfTooTall ? "#ffe6e6" : "#fefefe",
+                            userSelect: "none",
+                            borderRadius: "4px",
+                            boxShadow: "inset 0 2px 4px rgba(0,0,0,0.1)",
+                            backgroundImage: "linear-gradient(to bottom, rgba(139, 115, 85, 0.02), rgba(139, 115, 85, 0.05))",
+                          }}
+                        >
+                          {topShelfObjects.map((obj) => renderObject(obj, true))}
+                        </div>
+                        <label style={{ color: "#5C4A3B", fontWeight: "500" }}>
+                          📏 Top Shelf Height (inches):&nbsp;
+                          <input
+                            type="number"
+                            min={1}
+                            max={TOTAL_SHELF_HEIGHT - 1}
+                            value={unit.topHeight}
+                            onChange={(e) =>
+                              updateShelfHeight(unit.id, true, e.target.value)
+                            }
+                            style={{ 
+                              width: 60,
+                              padding: "4px 8px",
+                              border: "1px solid #8B7355",
+                              borderRadius: "4px",
+                              backgroundColor: "#fdfcfb"
+                            }}
+                            title="Top shelf height (vertical in inches)"
+                          />
+                        </label>
+
+                        <div
+                          className="shelf"
+                          data-shelf-id={`${unit.id}-bottom`}
+                          style={{
+                            width: SHELF_WIDTH_IN * SCALE,
+                            height: SHELF_DEPTH_IN * SCALE,
+                            border: `3px solid ${bottomShelfTooTall ? "#e74c3c" : "#5C9EAD"}`,
+                            position: "relative",
+                            backgroundColor: bottomShelfTooTall ? "#ffe6e6" : "#fefefe",
+                            userSelect: "none",
+                            marginTop: 12,
+                            marginBottom: 6,
+                            borderRadius: "4px",
+                            boxShadow: "inset 0 2px 4px rgba(0,0,0,0.1)",
+                            backgroundImage: "linear-gradient(to bottom, rgba(92, 158, 173, 0.02), rgba(92, 158, 173, 0.05))",
+                          }}
+                        >
+                          {bottomShelfObjects.map((obj) => renderObject(obj, true))}
+                        </div>
+                        <label style={{ color: "#5C4A3B", fontWeight: "500" }}>
+                          📏 Bottom Shelf Height (inches):&nbsp;
+                          <input
+                            type="number"
+                            min={1}
+                            max={TOTAL_SHELF_HEIGHT - 1}
+                            value={unit.bottomHeight}
+                            onChange={(e) =>
+                              updateShelfHeight(unit.id, false, e.target.value)
+                            }
+                            style={{ 
+                              width: 60,
+                              padding: "4px 8px",
+                              border: "1px solid #8B7355",
+                              borderRadius: "4px",
+                              backgroundColor: "#fdfcfb"
+                            }}
+                            title="Bottom shelf height (vertical in inches)"
+                          />
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                {/* Render dragged ghost image */}
+                {renderDraggedGhost()}
+              </div>
             </div>
           );
-        })}
-      </div>
-      
-        {/* Render dragged ghost image */}
-        {renderDraggedGhost()}
-      </div>
-    </div>
-  );
-};
+        };
 
-export default ShelfPlanner;
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ShelfPlanner />);
+    </script>
+</body>
+</html> => setHoveredButton(null)}
+                    >
+                      Sort by: {sortMode === "catalog" ? "Catalog" : "Height"}
+                    </button>
+                    <button 
+                      onClick={addUnit} 
+                      style={{
+                        ...buttonStyle,
+                        ...(hoveredButton === 'add' ? buttonHoverStyle : {}),
+                        marginRight: 8
+                      }}
+                      onMouseEnter={() => setHoveredButton('add')}
+                      onMouseLeave={()
