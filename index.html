@@ -143,14 +143,9 @@
             if (file) {
               const reader = new FileReader();
               reader.onload = (e) => {
-                try {
-                  const csvData = parseCSV(e.target.result);
-                  setObjects(csvData);
-                  setPlacedObjects([]);
-                } catch (error) {
-                  alert("Error parsing CSV file. Please check the format.");
-                  console.error(error);
-                }
+                const csvData = parseCSV(e.target.result);
+                setObjects(csvData);
+                setPlacedObjects([]);
               };
               reader.readAsText(file);
             }
@@ -259,9 +254,12 @@
 
           const sortedObjects = useMemo(() => {
             return [...objects].sort((a, b) => {
+              // First sort by taxa
               if (a.taxa !== b.taxa) return a.taxa.localeCompare(b.taxa);
               
+              // Then sort by selected criteria
               if (sortMode === "catalog") {
+                // Extract numbers from catalog for better sorting
                 const getNumericPart = (catalog) => {
                   const match = catalog.match(/\d+/);
                   return match ? parseInt(match[0]) : 0;
@@ -269,9 +267,12 @@
                 const numA = getNumericPart(a.catalog);
                 const numB = getNumericPart(b.catalog);
                 
+                // If both have numbers, sort numerically
                 if (numA && numB) return numA - numB;
+                // Otherwise sort alphabetically
                 return a.catalog.localeCompare(b.catalog);
               } else {
+                // Sort by height - smallest to largest
                 return a.height - b.height;
               }
             });
@@ -606,12 +607,20 @@
                   <h3 style={{ color: "#5C4A3B", borderBottom: "2px solid #8B7355", paddingBottom: "8px", marginBottom: "16px", fontSize: "18px", display: "flex", alignItems: "center", gap: "8px" }}>
                     <span style={{ fontSize: "24px" }}>🐘</span> Controls
                   </h3>
-                  <input type="file" accept=".csv" onChange={handleFileUpload} ref={fileInputRef} style={{ marginBottom: 10, display: "block", width: "100%" }} />
-                  <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <input type="file" accept=".csv" onChange={handleFileUpload} ref={fileInputRef} style={{ marginBottom: 10 }} />
+                  <div style={{ marginBottom: 10 }}>
                     <button 
                       onClick={toggleSortMode} 
-                      style={{ ...buttonStyle, ...(hoveredButton === 'sort' ? buttonHoverStyle : {}) }}
+                      style={{ ...buttonStyle, ...(hoveredButton === 'sort' ? buttonHoverStyle : {}), marginRight: 8 }}
                       onMouseEnter={() => setHoveredButton('sort')}
+                      onMouseLeave={() => setHoveredButton(null)}
+                    >
+                      Sort by: {sortMode === "catalog" ? "Height" : "Catalog"}
+                    </button>
+                    <button 
+                      onClick={addUnit} 
+                      style={{ ...buttonStyle, ...(hoveredButton === 'add' ? buttonHoverStyle : {}), marginRight: 8 }}
+                      onMouseEnter={() => setHoveredButton('add')}
                       onMouseLeave={() => setHoveredButton(null)}
                     >
                       Add Unit
@@ -638,7 +647,7 @@
                               {type === "crania" ? "Cranium" : 
                                type === "boxes" ? "Box" : 
                                type === "allskull" ? "Whole Skull" : 
-                               type.charAt(0).toUpperCase() + type.slice(1)}
+                               type}
                             </div>
                           </div>
                         ))}
@@ -749,12 +758,4 @@
         root.render(<ShelfPlanner />);
     </script>
 </body>
-</html>null)}
-                    >
-                      Sort by: {sortMode === "catalog" ? "Height" : "Catalog"}
-                    </button>
-                    <button 
-                      onClick={addUnit} 
-                      style={{ ...buttonStyle, ...(hoveredButton === 'add' ? buttonHoverStyle : {}) }}
-                      onMouseEnter={() => setHoveredButton('add')}
-                      onMouseLeave={() => setHoveredButton(
+</html>
