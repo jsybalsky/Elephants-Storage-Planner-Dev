@@ -612,14 +612,6 @@
                     <button 
                       onClick={toggleSortMode} 
                       style={{ ...buttonStyle, ...(hoveredButton === 'sort' ? buttonHoverStyle : {}), marginRight: 8 }}
-                      onMouseEnter={() => setHoveredButton('sort')}
-                      onMouseLeave={() => setHoveredButton(null)}
-                    >
-                      Sort by: {sortMode === "catalog" ? "Height" : "Catalog"}
-                    </button>
-                    <button 
-                      onClick={addUnit} 
-                      style={{ ...buttonStyle, ...(hoveredButton === 'add' ? buttonHoverStyle : {}), marginRight: 8 }}
                       onMouseEnter={() => setHoveredButton('add')}
                       onMouseLeave={() => setHoveredButton(null)}
                     >
@@ -758,4 +750,12 @@
         root.render(<ShelfPlanner />);
     </script>
 </body>
-</html>
+</html> => setHoveredButton('sort')}
+                      onMouseLeave={() => setHoveredButton(null)}
+                    >
+                      Sort by: {sortMode === "catalog" ? "Height" : "Catalog"}
+                    </button>
+                    <button 
+                      onClick={addUnit} 
+                      style={{ ...buttonStyle, ...(hoveredButton === 'add' ? buttonHoverStyle : {}), marginRight: 8 }}
+                      onMouseEnter={()
