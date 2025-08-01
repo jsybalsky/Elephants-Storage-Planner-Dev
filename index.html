@@ -110,17 +110,8 @@
             const taxaIndex = headers.findIndex(h => h.includes("taxa") || h.includes("genus"));
             const contentsIndex = headers.findIndex(h => h.includes("unit contents") || h.includes("contents"));
 
-            // Filter out empty lines and parse valid data
-            const validObjects = [];
-            
-            lines.slice(1).forEach((line, index) => {
-              // Skip empty lines
-              if (!line.trim()) return;
-              
+            return lines.slice(1).map((line, index) => {
               const values = line.split(",").map(v => v.trim());
-              
-              // Skip if no catalog number
-              if (!values[catalogIndex] || values[catalogIndex] === "") return;
 
               let taxa = values[taxaIndex] || "Other";
               if (taxa.toLowerCase().includes("loxodonta")) taxa = "Loxodonta";
@@ -134,27 +125,17 @@
               else if (type.includes("mandible")) type = "mandible";
               else type = "boxes";
 
-              const height = parseFloat(values[heightIndex]);
-              const width = parseFloat(values[widthIndex]);
-              const depth = parseFloat(values[depthIndex]);
-              
-              // Only add if dimensions are valid
-              if (!isNaN(height) && !isNaN(width) && !isNaN(depth) && height > 0 && width > 0 && depth > 0) {
-                validObjects.push({
-                  id: `obj-${validObjects.length}`,
-                  catalog: values[catalogIndex],
-                  height: height,
-                  width: width,
-                  depth: depth,
-                  taxa: taxa,
-                  type: type,
-                  canRotate: !(type === "crania" || type === "allskull")
-                });
-              }
+              return {
+                id: `obj-${index}`,
+                catalog: values[catalogIndex] || `Item ${index + 1}`,
+                height: parseFloat(values[heightIndex]) || 1,
+                width: parseFloat(values[widthIndex]) || 1,
+                depth: parseFloat(values[depthIndex]) || 1,
+                taxa,
+                type,
+                canRotate: !(type === "crania" || type === "allskull")
+              };
             });
-
-            console.log(`Parsed ${validObjects.length} valid objects from CSV`);
-            return validObjects;
           };
 
           const handleFileUpload = (event) => {
@@ -162,9 +143,14 @@
             if (file) {
               const reader = new FileReader();
               reader.onload = (e) => {
-                const csvData = parseCSV(e.target.result);
-                setObjects(csvData);
-                setPlacedObjects([]);
+                try {
+                  const csvData = parseCSV(e.target.result);
+                  setObjects(csvData);
+                  setPlacedObjects([]);
+                } catch (error) {
+                  alert("Error parsing CSV file. Please check the format.");
+                  console.error(error);
+                }
               };
               reader.readAsText(file);
             }
@@ -273,12 +259,9 @@
 
           const sortedObjects = useMemo(() => {
             return [...objects].sort((a, b) => {
-              // First sort by taxa
               if (a.taxa !== b.taxa) return a.taxa.localeCompare(b.taxa);
               
-              // Then sort by selected criteria
               if (sortMode === "catalog") {
-                // Extract numbers from catalog for better sorting
                 const getNumericPart = (catalog) => {
                   const match = catalog.match(/\d+/);
                   return match ? parseInt(match[0]) : 0;
@@ -286,12 +269,9 @@
                 const numA = getNumericPart(a.catalog);
                 const numB = getNumericPart(b.catalog);
                 
-                // If both have numbers, sort numerically
                 if (numA && numB) return numA - numB;
-                // Otherwise sort alphabetically
                 return a.catalog.localeCompare(b.catalog);
               } else {
-                // Sort by height - smallest to largest
                 return a.height - b.height;
               }
             });
@@ -626,12 +606,12 @@
                   <h3 style={{ color: "#5C4A3B", borderBottom: "2px solid #8B7355", paddingBottom: "8px", marginBottom: "16px", fontSize: "18px", display: "flex", alignItems: "center", gap: "8px" }}>
                     <span style={{ fontSize: "24px" }}>🐘</span> Controls
                   </h3>
-                  <input type="file" accept=".csv" onChange={handleFileUpload} ref={fileInputRef} style={{ marginBottom: 10 }} />
-                  <div style={{ marginBottom: 10 }}>
+                  <input type="file" accept=".csv" onChange={handleFileUpload} ref={fileInputRef} style={{ marginBottom: 10, display: "block", width: "100%" }} />
+                  <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 8 }}>
                     <button 
                       onClick={toggleSortMode} 
-                      style={{ ...buttonStyle, ...(hoveredButton === 'sort' ? buttonHoverStyle : {}), marginRight: 8 }}
-                      onMouseEnter={() => setHoveredButton('add')}
+                      style={{ ...buttonStyle, ...(hoveredButton === 'sort' ? buttonHoverStyle : {}) }}
+                      onMouseEnter={() => setHoveredButton('sort')}
                       onMouseLeave={() => setHoveredButton(null)}
                     >
                       Add Unit
@@ -658,7 +638,7 @@
                               {type === "crania" ? "Cranium" : 
                                type === "boxes" ? "Box" : 
                                type === "allskull" ? "Whole Skull" : 
-                               type}
+                               type.charAt(0).toUpperCase() + type.slice(1)}
                             </div>
                           </div>
                         ))}
@@ -769,12 +749,12 @@
         root.render(<ShelfPlanner />);
     </script>
 </body>
-</html> => setHoveredButton('sort')}
-                      onMouseLeave={() => setHoveredButton(null)}
+</html>null)}
                     >
                       Sort by: {sortMode === "catalog" ? "Height" : "Catalog"}
                     </button>
                     <button 
                       onClick={addUnit} 
-                      style={{ ...buttonStyle, ...(hoveredButton === 'add' ? buttonHoverStyle : {}), marginRight: 8 }}
-                      onMouseEnter={()
+                      style={{ ...buttonStyle, ...(hoveredButton === 'add' ? buttonHoverStyle : {}) }}
+                      onMouseEnter={() => setHoveredButton('add')}
+                      onMouseLeave={() => setHoveredButton(
