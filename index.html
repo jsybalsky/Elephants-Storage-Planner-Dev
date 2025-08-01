@@ -110,8 +110,17 @@
             const taxaIndex = headers.findIndex(h => h.includes("taxa") || h.includes("genus"));
             const contentsIndex = headers.findIndex(h => h.includes("unit contents") || h.includes("contents"));
 
-            return lines.slice(1).map((line, index) => {
+            // Filter out empty lines and parse valid data
+            const validObjects = [];
+            
+            lines.slice(1).forEach((line, index) => {
+              // Skip empty lines
+              if (!line.trim()) return;
+              
               const values = line.split(",").map(v => v.trim());
+              
+              // Skip if no catalog number
+              if (!values[catalogIndex] || values[catalogIndex] === "") return;
 
               let taxa = values[taxaIndex] || "Other";
               if (taxa.toLowerCase().includes("loxodonta")) taxa = "Loxodonta";
@@ -125,17 +134,27 @@
               else if (type.includes("mandible")) type = "mandible";
               else type = "boxes";
 
-              return {
-                id: `obj-${index}`,
-                catalog: values[catalogIndex] || `Item ${index + 1}`,
-                height: parseFloat(values[heightIndex]) || 1,
-                width: parseFloat(values[widthIndex]) || 1,
-                depth: parseFloat(values[depthIndex]) || 1,
-                taxa,
-                type,
-                canRotate: !(type === "crania" || type === "allskull")
-              };
+              const height = parseFloat(values[heightIndex]);
+              const width = parseFloat(values[widthIndex]);
+              const depth = parseFloat(values[depthIndex]);
+              
+              // Only add if dimensions are valid
+              if (!isNaN(height) && !isNaN(width) && !isNaN(depth) && height > 0 && width > 0 && depth > 0) {
+                validObjects.push({
+                  id: `obj-${validObjects.length}`,
+                  catalog: values[catalogIndex],
+                  height: height,
+                  width: width,
+                  depth: depth,
+                  taxa: taxa,
+                  type: type,
+                  canRotate: !(type === "crania" || type === "allskull")
+                });
+              }
             });
+
+            console.log(`Parsed ${validObjects.length} valid objects from CSV`);
+            return validObjects;
           };
 
           const handleFileUpload = (event) => {
